@@ -4,8 +4,10 @@ import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
+from datetime import datetime
 from PIL import Image
 from PIL.ExifTags import TAGS
+import screenshot_classifier
 
 # ── Constants ──────────────────────────────────────────────────
 IMAGE_EXTS = {
@@ -82,17 +84,14 @@ def _read_exif(path: Path) -> dict:
     """
     Open image with Pillow, read raw EXIF, map tag IDs → tag names.
     Return {} on ANY failure — EXIF is unreliable, never let it crash.
-
-    Hint: img._getexif() returns {tag_id: value}
-          TAGS dict from PIL.ExifTags maps tag_id → human name
     """
     try:
-        img = Image.open(path)        # open with Pillow
-        raw = img._getexif()          # returns {tag_id: value} or None
-        if not raw:
-            return {}
-        # TAGS maps numeric id → human name e.g. {306: "DateTime"}
-        return {TAGS.get(tag_id, tag_id): value for tag_id, value in raw.items()}
+        with Image.open(path) as img:
+            raw = img._getexif()          # returns {tag_id: value} or None
+            if not raw:
+                return {}
+            # TAGS maps numeric id → human name e.g. {306: "DateTime"}
+            return {TAGS.get(tag_id, tag_id): value for tag_id, value in raw.items()}
     except Exception:
         return {}
 
@@ -108,10 +107,36 @@ def _get_capture_date(exif: dict, path: Path) -> Optional[str]:
          validate: year 1990-2100, month 01-12, day 01-31
       3. os.path.getmtime(path) → datetime → strftime
     """
-    pass
+    # 1. Try EXIF date fields in priority order
+    for key in ("DateTimeOriginal", "DateTime", "DateTimeDigitized"):
+        value = exif.get(key)
+        if value and isinstance(value, str) and len(value) >= 10:
+            # Format is "YYYY:MM:DD HH:MM:SS" — grab first 10 chars and swap colons
+            date_part = value[:10].replace(":", "-")
+            # Basic sanity check: should look like YYYY-MM-DD
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", date_part):
+                return date_part
+
+    # 2. Regex the filename for 8 consecutive digits (e.g. 20240115)
+    stem = path.stem
+    match = re.search(r"(\d{8})", stem)
+    if match:
+        digits = match.group(1)
+        year  = int(digits[0:4])
+        month = int(digits[4:6])
+        day   = int(digits[6:8])
+        if 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+    # 3. Fall back to file modification time
+    try:
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 
-def _is_screenshot(path: Path, exif: dict) -> bool:
+def _is_screenshot(path: Path, exif: dict, size: Optional[tuple] = None) -> bool:
     """
     Return True if the file is likely a screenshot.
 
@@ -119,11 +144,37 @@ def _is_screenshot(path: Path, exif: dict) -> bool:
       1. exif "Software" field contains "screenshot" or "snip" (case-insensitive)
       2. No camera "Make" in exif AND image size matches SCREEN_RESOLUTIONS
       3. Extension is .png AND no camera "Make" AND aspect ratio < 2.5
+         AND size matches SCREEN_RESOLUTIONS
          aspect ratio = max(w,h) / min(w,h)
-
-    Wrap Image.open() in try/except — always.
     """
-    pass
+    software = exif.get("Software", "")
+    if isinstance(software, str):
+        lower = software.lower()
+        if "screenshot" in lower or "snip" in lower:
+            return True
+
+    has_camera_make = bool(exif.get("Make"))
+
+    try:
+        if size is None:
+            with Image.open(path) as img:
+                size = img.size
+        w, h = size
+
+        # 2. No camera make + resolution matches a known screen resolution
+        if not has_camera_make and (w, h) in SCREEN_RESOLUTIONS:
+            return True
+
+        # 3. PNG + no camera make + aspect ratio < 2.5 + resolution match
+        if path.suffix.lower() == ".png" and not has_camera_make:
+            if min(w, h) > 0 and (w, h) in SCREEN_RESOLUTIONS:
+                aspect = max(w, h) / min(w, h)
+                if aspect < 2.5:
+                    return True
+    except Exception:
+        pass
+
+    return False
 
 
 # ── Main entry point ────────────────────────────────────────────
@@ -131,18 +182,83 @@ def _is_screenshot(path: Path, exif: dict) -> bool:
 def scan_folder(root: str) -> List[FileRecord]:
     """
     Recursively walk root, return a FileRecord for every non-hidden file.
-
-    Steps:
-      1. os.walk — for each dir, filter out hidden dirs in-place:
-             dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-      2. Skip hidden files (startswith '.') and skip files you can't stat
-      3. For each file:
-           - get ext (lower), size from stat
-           - IMAGE_EXTS  → _read_exif, _is_screenshot, _get_capture_date
-                           file_type = "screenshot" if is_ss else "image"
-           - VIDEO_EXTS  → _get_capture_date (no exif), file_type = "video"
-           - DOC_EXTS    → file_type = "document"
-           - else        → file_type = "other"
-      4. Append FileRecord, return the full list
     """
-    pass
+    records: List[FileRecord] = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 1. Skip hidden directories in-place (prevents descending into them)
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        for filename in filenames:
+            # 2. Skip hidden files
+            if filename.startswith("."):
+                continue
+
+            full_path = Path(dirpath) / filename
+
+            # Skip files we can't stat
+            try:
+                stat = full_path.stat()
+            except OSError:
+                continue
+
+            size_bytes = stat.st_size
+            ext = full_path.suffix.lower()
+
+            # 3. Classify and build the FileRecord
+            if ext in IMAGE_EXTS:
+                exif = _read_exif(full_path)
+                try:
+                    with Image.open(full_path) as img:
+                        size = img.size
+                except Exception:
+                    size = None
+
+                # rule-based check
+                rule_says_ss = _is_screenshot(full_path, exif, size)
+
+                # ML check — falls back to None if model not trained yet
+                ml_says_ss = screenshot_classifier.predict(full_path) == "screenshot"
+
+                # either signal is enough to call it a screenshot
+                is_ss = rule_says_ss or ml_says_ss
+
+                capture_date = _get_capture_date(exif, full_path)
+                file_type = "screenshot" if is_ss else "image"
+                records.append(FileRecord(
+                    path=full_path,
+                    ext=ext,
+                    size_bytes=size_bytes,
+                    file_type=file_type,
+                    capture_date=capture_date,
+                    exif=exif,
+                    is_screenshot=is_ss,
+                ))
+
+            elif ext in VIDEO_EXTS:
+                capture_date = _get_capture_date({}, full_path)
+                records.append(FileRecord(
+                    path=full_path,
+                    ext=ext,
+                    size_bytes=size_bytes,
+                    file_type="video",
+                    capture_date=capture_date,
+                ))
+
+            elif ext in DOC_EXTS:
+                records.append(FileRecord(
+                    path=full_path,
+                    ext=ext,
+                    size_bytes=size_bytes,
+                    file_type="document",
+                ))
+
+            else:
+                records.append(FileRecord(
+                    path=full_path,
+                    ext=ext,
+                    size_bytes=size_bytes,
+                    file_type="other",
+                ))
+
+    return records
