@@ -7,3 +7,10 @@ tqdm>=4.66.0
 colorama>=0.4.6
 joblib>=1.3.0
 pybktree>=1.1
+
+# Face recognition — requires cmake and C++ build tools to compile dlib
+# Windows: install Visual Studio Build Tools first
+# Mac: brew install cmake
+# Linux: sudo apt install cmake build-essential
+dlib>=19.7.0
+face_recognition>=1.3.0
