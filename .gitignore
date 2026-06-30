@@ -31,3 +31,5 @@ test_scanner.py
 test_deduper.py
 test_quality.py
 test_faces.py
+test_organiser.py
+test_output/
