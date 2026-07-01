@@ -186,7 +186,7 @@ def build_plan(
         person_folder = out / "People" / f"Person_{cluster_id + 1}"
         for rec in cluster_records:
             dst = person_folder / rec.path.name
-            plan.add(rec.path, dst, f"person {cluster_id}")
+            plan.add(rec.path, dst, f"person {cluster_id + 1}")
 
     return plan
 

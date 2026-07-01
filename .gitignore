@@ -33,3 +33,4 @@ test_quality.py
 test_faces.py
 test_organiser.py
 test_output/
+final_test/

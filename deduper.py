@@ -7,6 +7,7 @@ import imagehash
 from PIL import Image
 from scanner import FileRecord
 import pybktree
+from tqdm import tqdm
 
 PHASH_THRESHOLD = 8  # hamming distance — 0 = identical, ≤8 = very similar
 
@@ -58,7 +59,7 @@ def find_duplicates(records: List[FileRecord]) -> Tuple[
     image_records = [r for r in records if r.file_type in ("image", "screenshot")]
 
     md5_groups: Dict[str, List[FileRecord]] = defaultdict(list)
-    for record in image_records:
+    for record in tqdm(image_records, desc="Hashing files (MD5)", unit="file"):
         digest = _md5(record.path)
         if digest:  # skip files that failed to hash
             md5_groups[digest].append(record)
@@ -76,7 +77,7 @@ def find_duplicates(records: List[FileRecord]) -> Tuple[
 
     # Compute pHash for each remaining image
     phashes: List[Tuple[FileRecord, object]] = []
-    for record in remaining:
+    for record in tqdm(remaining, desc="Computing pHash", unit="file"):
         ph = _phash(record.path)
         if ph is not None:
             phashes.append((record, ph))

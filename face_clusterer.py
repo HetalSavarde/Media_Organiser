@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import List, Dict
 from sklearn.cluster import DBSCAN
 from scanner import FileRecord
+from tqdm import tqdm
+
 
 DBSCAN_EPS   = 0.5   # max distance between two face embeddings to be same person
 DBSCAN_MIN   = 2     # minimum photos to form a person cluster
@@ -22,7 +24,15 @@ def _detect_faces(path: Path) -> List[np.ndarray]:
     """
     try:
         img = face_recognition.load_image_file(str(path))
-        # returns list of 128-d numpy arrays — one per face found
+
+        # Downscale large images — massively speeds up detection
+        h, w = img.shape[:2]
+        max_dim = 800
+        if max(h, w) > max_dim:
+            scale = max_dim / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = cv2.resize(img, (new_w, new_h))
+
         encodings = face_recognition.face_encodings(img)
         return encodings
     except Exception:
@@ -42,7 +52,7 @@ def cluster_faces(records: List[FileRecord]) -> Dict[int, List[FileRecord]]:
 
     # 2. Detect faces — take first face per image
     face_data: List[tuple] = []   # (FileRecord, 128-d embedding)
-    for record in image_records:
+    for record in tqdm(image_records, desc="Detecting faces", unit="img"):
         encodings = _detect_faces(record.path)
         if encodings:
             face_data.append((record, encodings[0]))

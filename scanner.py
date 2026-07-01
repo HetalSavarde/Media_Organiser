@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image
 from PIL.ExifTags import TAGS
 import screenshot_classifier
+from tqdm import tqdm
 
 # ── Constants ──────────────────────────────────────────────────
 IMAGE_EXTS = {
@@ -185,80 +186,80 @@ def scan_folder(root: str) -> List[FileRecord]:
     """
     records: List[FileRecord] = []
 
+    # First pass — collect all file paths (fast, no processing)
+    all_files = []
     for dirpath, dirnames, filenames in os.walk(root):
-        # 1. Skip hidden directories in-place (prevents descending into them)
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
         for filename in filenames:
-            # 2. Skip hidden files
             if filename.startswith("."):
                 continue
+            all_files.append(Path(dirpath) / filename)
 
-            full_path = Path(dirpath) / filename
+    # Second pass — process each file with a progress bar
+    for full_path in tqdm(all_files, desc="Scanning files", unit="file"):
+        # Skip files we can't stat
+        try:
+            stat = full_path.stat()
+        except OSError:
+            continue
 
-            # Skip files we can't stat
+        size_bytes = stat.st_size
+        ext = full_path.suffix.lower()
+
+        # Classify and build the FileRecord
+        if ext in IMAGE_EXTS:
+            exif = _read_exif(full_path)
             try:
-                stat = full_path.stat()
-            except OSError:
-                continue
+                with Image.open(full_path) as img:
+                    size = img.size
+            except Exception:
+                size = None
 
-            size_bytes = stat.st_size
-            ext = full_path.suffix.lower()
+            # rule-based check
+            rule_says_ss = _is_screenshot(full_path, exif, size)
 
-            # 3. Classify and build the FileRecord
-            if ext in IMAGE_EXTS:
-                exif = _read_exif(full_path)
-                try:
-                    with Image.open(full_path) as img:
-                        size = img.size
-                except Exception:
-                    size = None
+            # ML check — falls back to None if model not trained yet
+            ml_says_ss = screenshot_classifier.predict(full_path) == "screenshot"
 
-                # rule-based check
-                rule_says_ss = _is_screenshot(full_path, exif, size)
+            # either signal is enough to call it a screenshot
+            is_ss = rule_says_ss or ml_says_ss
 
-                # ML check — falls back to None if model not trained yet
-                ml_says_ss = screenshot_classifier.predict(full_path) == "screenshot"
+            capture_date = _get_capture_date(exif, full_path)
+            file_type = "screenshot" if is_ss else "image"
+            records.append(FileRecord(
+                path=full_path,
+                ext=ext,
+                size_bytes=size_bytes,
+                file_type=file_type,
+                capture_date=capture_date,
+                exif=exif,
+                is_screenshot=is_ss,
+            ))
 
-                # either signal is enough to call it a screenshot
-                is_ss = rule_says_ss or ml_says_ss
+        elif ext in VIDEO_EXTS:
+            capture_date = _get_capture_date({}, full_path)
+            records.append(FileRecord(
+                path=full_path,
+                ext=ext,
+                size_bytes=size_bytes,
+                file_type="video",
+                capture_date=capture_date,
+            ))
 
-                capture_date = _get_capture_date(exif, full_path)
-                file_type = "screenshot" if is_ss else "image"
-                records.append(FileRecord(
-                    path=full_path,
-                    ext=ext,
-                    size_bytes=size_bytes,
-                    file_type=file_type,
-                    capture_date=capture_date,
-                    exif=exif,
-                    is_screenshot=is_ss,
-                ))
+        elif ext in DOC_EXTS:
+            records.append(FileRecord(
+                path=full_path,
+                ext=ext,
+                size_bytes=size_bytes,
+                file_type="document",
+            ))
 
-            elif ext in VIDEO_EXTS:
-                capture_date = _get_capture_date({}, full_path)
-                records.append(FileRecord(
-                    path=full_path,
-                    ext=ext,
-                    size_bytes=size_bytes,
-                    file_type="video",
-                    capture_date=capture_date,
-                ))
-
-            elif ext in DOC_EXTS:
-                records.append(FileRecord(
-                    path=full_path,
-                    ext=ext,
-                    size_bytes=size_bytes,
-                    file_type="document",
-                ))
-
-            else:
-                records.append(FileRecord(
-                    path=full_path,
-                    ext=ext,
-                    size_bytes=size_bytes,
-                    file_type="other",
-                ))
+        else:
+            records.append(FileRecord(
+                path=full_path,
+                ext=ext,
+                size_bytes=size_bytes,
+                file_type="other",
+            ))
 
     return records
