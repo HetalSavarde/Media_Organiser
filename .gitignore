@@ -24,6 +24,9 @@ Thumbs.db
 Organised/
 output/
 
+# State file — contains local file paths, personal to each machine
+organised.json
+
 # Testing / debug scripts
 test_scanner.py
 test_deduper.py

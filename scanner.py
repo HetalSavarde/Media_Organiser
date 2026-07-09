@@ -177,6 +177,14 @@ def _is_screenshot(path: Path, exif: dict, size: Optional[tuple] = None) -> bool
 
     return False
 
+def _is_downloaded(path: Path, exif: dict) -> bool:
+    # No camera make = not taken by a camera
+    if not exif.get("Make"):
+        return True
+    # Heavily compressed — under 300KB suspicious for a real photo
+    if path.stat().st_size < 300_000:
+        return True
+    return False
 
 # ── Main entry point ────────────────────────────────────────────
 
@@ -221,8 +229,11 @@ def scan_folder(root: str) -> List[FileRecord]:
             # ML check — falls back to None if model not trained yet
             ml_says_ss = screenshot_classifier.predict(full_path) == "screenshot"
 
+            # Download check
+            download_says_ss = _is_downloaded(full_path, exif)
+
             # either signal is enough to call it a screenshot
-            is_ss = rule_says_ss or ml_says_ss
+            is_ss = rule_says_ss or ml_says_ss or download_says_ss
 
             capture_date = _get_capture_date(exif, full_path)
             file_type = "screenshot" if is_ss else "image"

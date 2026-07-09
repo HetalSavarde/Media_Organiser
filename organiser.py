@@ -119,7 +119,7 @@ def build_plan(
     records:       List[FileRecord],
     exact_dupes:   Dict[str, List[FileRecord]],
     near_dupes:    List[List[FileRecord]],      # [best, rest...] per cluster
-    face_clusters: Dict[int, List[FileRecord]],
+    face_clusters: Dict,
     output_root:   str,
 ) -> Plan:
     """
@@ -178,15 +178,15 @@ def build_plan(
         plan.add(rec.path, dst, reason)
         assigned.add(rec.path)
 
-    # 4. Face clusters — additional copies to People/Person_N/
-    #    (skip cluster_id -1 = DBSCAN noise)
-    for cluster_id, cluster_records in face_clusters.items():
-        if cluster_id == -1:
+    # # 4. Face clusters — additional copies to People/<name>/
+    #    skip noise (key -1)
+    for person_name, cluster_records in face_clusters.items():
+        if person_name == -1:
             continue
-        person_folder = out / "People" / f"Person_{cluster_id + 1}"
+        person_folder = out / "People" / str(person_name)
         for rec in cluster_records:
             dst = person_folder / rec.path.name
-            plan.add(rec.path, dst, f"person {cluster_id + 1}")
+            plan.add(rec.path, dst, person_name)
 
     return plan
 
